@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ROKBATT — 위치공유</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #060a06; --panel: #0b100b; --border: #1e401e;
+    --accent: #00ff41; --warn: #ffcc00; --danger: #ff3333;
+    --text: #b8d4b8; --muted: #3a5a3a;
+    --mono: 'Share Tech Mono', monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: var(--mono); min-height: 100dvh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 24px 16px;
+  }
+
+  .logo { font-size: 14px; color: var(--accent); letter-spacing: 3px; margin-bottom: 4px; text-shadow: 0 0 12px rgba(0,255,65,0.5); }
+  .sub  { font-size: 10px; color: var(--muted); letter-spacing: 1px; margin-bottom: 32px; }
+
+  .card {
+    width: 100%; max-width: 360px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 24px;
+  }
+
+  .field-label { font-size: 10px; color: var(--muted); letter-spacing: 1px; margin-bottom: 6px; }
+
+  .field-input {
+    width: 100%; background: #060a06;
+    border: 1px solid var(--border); color: var(--text);
+    font-family: var(--mono); font-size: 16px;
+    padding: 10px 14px; border-radius: 4px; outline: none;
+    margin-bottom: 16px;
+  }
+  .field-input:focus { border-color: var(--accent); }
+  .field-input::placeholder { color: var(--muted); }
+
+  select.field-input { cursor: pointer; }
+
+  .btn {
+    width: 100%; padding: 12px;
+    border: 1px solid var(--accent);
+    background: rgba(0,255,65,0.08);
+    color: var(--accent); font-family: var(--mono);
+    font-size: 14px; border-radius: 4px;
+    cursor: pointer; transition: all 0.2s;
+    margin-bottom: 8px; letter-spacing: 1px;
+  }
+  .btn:hover:not(:disabled) { background: rgba(0,255,65,0.2); }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn.stop { border-color: var(--danger); color: var(--danger); background: rgba(255,51,51,0.08); }
+  .btn.stop:hover:not(:disabled) { background: rgba(255,51,51,0.2); }
+
+  #status-box {
+    margin-top: 20px; padding: 14px;
+    background: #060a06; border: 1px solid var(--border);
+    border-radius: 4px; font-size: 12px; line-height: 2;
+  }
+  .stat-row { display: flex; justify-content: space-between; }
+  .stat-label { color: var(--muted); }
+  .stat-val   { color: var(--accent); }
+  .stat-val.warn { color: var(--warn); }
+  .stat-val.err  { color: var(--danger); }
+
+  #pulse {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--muted); display: inline-block;
+    margin-right: 6px; vertical-align: middle;
+  }
+  #pulse.active { background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: blink 1s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+</style>
+</head>
+<body>
+
+<div class="logo">◈ ROKBATT FIELD</div>
+<div class="sub">위치공유 단말</div>
+
+<div class="card">
+  <div class="field-label">// 콜사인</div>
+  <input class="field-input" id="callsign" placeholder="예: ALPHA-1" maxlength="20" autocomplete="off"/>
+
+  <div class="field-label">// 역할</div>
+  <select class="field-input" id="role">
+    <option value="FIELD">FIELD</option>
+    <option value="PATROL">PATROL</option>
+    <option value="OBS">OBS POST</option>
+    <option value="MEDIC">MEDIC</option>
+    <option value="CMD">CMD</option>
+  </select>
+
+  <button class="btn" id="btn-start" onclick="startTracking()">▶ 위치공유 시작</button>
+  <button class="btn stop" id="btn-stop" onclick="stopTracking()" disabled>■ 공유 중지</button>
+
+  <div id="status-box">
+    <div class="stat-row">
+      <span class="stat-label">상태</span>
+      <span><span id="pulse"></span><span id="st-status" class="stat-val err">대기중</span></span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">UTM</span>
+      <span id="st-utm" class="stat-val warn">-</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">정확도</span>
+      <span id="st-acc" class="stat-val">-</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">전송횟수</span>
+      <span id="st-count" class="stat-val">0</span>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-app.js";
+import { getDatabase, ref, set, remove, onDisconnect } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBM86vLLG01b6nF2Q5RNg4YA8kn19KsLF4",
+  authDomain: "rokbattgodam.firebaseapp.com",
+  databaseURL: "https://rokbattgodam-default-rtdb.firebaseio.com",
+  projectId: "rokbattgodam",
+  storageBucket: "rokbattgodam.firebasestorage.app",
+  messagingSenderId: "1031351457270",
+  appId: "1:1031351457270:web:a9f17aa937b055e039e3d7"
+};
+
+const app = initializeApp(firebaseConfig);
+const db  = getDatabase(app);
+
+// UTM 변환
+function toUTM(lat, lng) {
+  const zone=Math.floor((lng+180)/6)+1, band=lat>=0?'N':'S';
+  const a=6378137,f=1/298.257223563,b=a*(1-f),e2=1-(b*b)/(a*a),k0=0.9996;
+  const lng0=((zone-1)*6-180+3)*Math.PI/180;
+  const latR=lat*Math.PI/180,lngR=lng*Math.PI/180;
+  const N=a/Math.sqrt(1-e2*Math.sin(latR)**2);
+  const T=Math.tan(latR)**2,C=(e2/(1-e2))*Math.cos(latR)**2,A2=Math.cos(latR)*(lngR-lng0);
+  const e4=e2*e2,e6=e4*e2;
+  const M=a*((1-e2/4-3*e4/64-5*e6/256)*latR-(3*e2/8+3*e4/32+45*e6/1024)*Math.sin(2*latR)+(15*e4/256+45*e6/1024)*Math.sin(4*latR)-(35*e6/3072)*Math.sin(6*latR));
+  let E=k0*N*(A2+(1-T+C)*A2**3/6+(5-18*T+T*T+72*C)*A2**5/120)+500000;
+  let Nn=k0*(M+N*Math.tan(latR)*(A2**2/2+(5-T+9*C+4*C*C)*A2**4/24+(61-58*T+T*T+600*C)*A2**6/720));
+  if(lat<0)Nn+=10000000;
+  return `${zone}${band} ${Math.round(E)} ${Math.round(Nn)}`;
+}
+
+let myId = null, interval = null, sendCount = 0, trackerRef = null;
+
+window.startTracking = async () => {
+  const callsign = document.getElementById('callsign').value.trim().toUpperCase();
+  if (!callsign) { alert('콜사인을 입력하세요!'); return; }
+  if (!navigator.geolocation) { alert('이 기기는 GPS를 지원하지 않습니다.'); return; }
+
+  myId = 'field_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+  const role = document.getElementById('role').value;
+  trackerRef = ref(db, `trackers/${myId}`);
+
+  // 브라우저 종료시 자동 삭제
+  onDisconnect(trackerRef).remove();
+
+  // 초기 등록 (GPS 없이)
+  await set(trackerRef, { id: myId, callsign, role, lat: null, lng: null, utm: null, timestamp: null });
+
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-stop').disabled = false;
+  document.getElementById('callsign').disabled = true;
+  document.getElementById('role').disabled = true;
+  document.getElementById('pulse').className = 'active';
+  document.getElementById('st-status').textContent = 'GPS 수신중...';
+  document.getElementById('st-status').className = 'stat-val warn';
+
+  sendLocation();
+  interval = setInterval(sendLocation, 5000);
+};
+
+function sendLocation() {
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+    const utm = toUTM(lat, lng);
+    sendCount++;
+
+    await set(trackerRef, {
+      id: myId,
+      callsign: document.getElementById('callsign').value.trim().toUpperCase(),
+      role: document.getElementById('role').value,
+      lat, lng, utm,
+      timestamp: Date.now()
+    });
+
+    document.getElementById('st-status').textContent = '전송중 ●';
+    document.getElementById('st-status').className = 'stat-val';
+    document.getElementById('st-utm').textContent = utm;
+    document.getElementById('st-acc').textContent = `±${Math.round(accuracy)}m`;
+    document.getElementById('st-count').textContent = sendCount;
+
+  }, () => {
+    document.getElementById('st-status').textContent = 'GPS 신호 없음';
+    document.getElementById('st-status').className = 'stat-val err';
+  }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 });
+}
+
+window.stopTracking = async () => {
+  clearInterval(interval);
+  if (trackerRef) await remove(trackerRef);
+
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+  document.getElementById('callsign').disabled = false;
+  document.getElementById('role').disabled = false;
+  document.getElementById('pulse').className = '';
+  document.getElementById('st-status').textContent = '중지됨';
+  document.getElementById('st-status').className = 'stat-val err';
+  document.getElementById('st-utm').textContent = '-';
+  document.getElementById('st-acc').textContent = '-';
+  sendCount = 0;
+  myId = null; trackerRef = null;
+};
+</script>
+</body>
+</html>
