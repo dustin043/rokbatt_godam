@@ -113,6 +113,10 @@
       <span id="st-acc" class="stat-val">-</span>
     </div>
     <div class="stat-row">
+      <span class="stat-label">GPS 품질</span>
+      <span id="st-quality" class="stat-val">-</span>
+    </div>
+    <div class="stat-row">
       <span class="stat-label">전송횟수</span>
       <span id="st-count" class="stat-val">0</span>
     </div>
@@ -152,7 +156,10 @@ function toUTM(lat, lng) {
   return `${zone}${band} ${Math.round(E)} ${Math.round(Nn)}`;
 }
 
-let myId = null, interval = null, sendCount = 0, trackerRef = null;
+let myId = null, watchId = null, sendCount = 0, trackerRef = null;
+let lastSent = 0;
+const ACCURACY_THRESHOLD = 50; // 50m 이상 오차면 무시
+const SEND_INTERVAL = 5000;    // 최소 5초 간격으로 전송
 
 window.startTracking = async () => {
   const callsign = document.getElementById('callsign').value.trim().toUpperCase();
@@ -163,10 +170,7 @@ window.startTracking = async () => {
   const role = document.getElementById('role').value;
   trackerRef = ref(db, `trackers/${myId}`);
 
-  // 브라우저 종료시 자동 삭제
   onDisconnect(trackerRef).remove();
-
-  // 초기 등록 (GPS 없이)
   await set(trackerRef, { id: myId, callsign, role, lat: null, lng: null, utm: null, timestamp: null });
 
   document.getElementById('btn-start').disabled = true;
@@ -174,41 +178,85 @@ window.startTracking = async () => {
   document.getElementById('callsign').disabled = true;
   document.getElementById('role').disabled = true;
   document.getElementById('pulse').className = 'active';
-  document.getElementById('st-status').textContent = 'GPS 수신중...';
-  document.getElementById('st-status').className = 'stat-val warn';
+  setStatus('GPS 위성 탐색중... (30초 소요될 수 있음)', 'warn');
 
-  sendLocation();
-  interval = setInterval(sendLocation, 5000);
+  // getCurrentPosition으로 먼저 빠르게 초기 위치 잡기
+  navigator.geolocation.getCurrentPosition(handlePos, handleErr,
+    { enableHighAccuracy: false, timeout: 5000, maximumAge: 30000 }
+  );
+
+  // watchPosition으로 지속 추적 (GPS 칩 직접 사용)
+  watchId = navigator.geolocation.watchPosition(handlePos, handleErr, {
+    enableHighAccuracy: true,  // GPS 칩 강제 사용
+    timeout: 30000,
+    maximumAge: 0              // 캐시 사용 안 함
+  });
 };
 
-function sendLocation() {
-  navigator.geolocation.getCurrentPosition(async (pos) => {
-    const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-    const utm = toUTM(lat, lng);
-    sendCount++;
+async function handlePos(pos) {
+  const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+  const now = Date.now();
 
-    await set(trackerRef, {
-      id: myId,
-      callsign: document.getElementById('callsign').value.trim().toUpperCase(),
-      role: document.getElementById('role').value,
-      lat, lng, utm,
-      timestamp: Date.now()
-    });
+  // 정확도 표시 (필터링은 하되 표시는 항상)
+  const accEl = document.getElementById('st-acc');
+  const accText = `±${Math.round(accuracy)}m`;
 
-    document.getElementById('st-status').textContent = '전송중 ●';
-    document.getElementById('st-status').className = 'stat-val';
-    document.getElementById('st-utm').textContent = utm;
-    document.getElementById('st-acc').textContent = `±${Math.round(accuracy)}m`;
-    document.getElementById('st-count').textContent = sendCount;
+  if (accuracy > ACCURACY_THRESHOLD) {
+    // 오차 크면 표시만 하고 전송은 보류
+    accEl.textContent = accText + ' (정확도 낮음)';
+    accEl.className = 'stat-val warn';
+    setStatus(`GPS 정확도 낮음 (±${Math.round(accuracy)}m) — 신호 개선 대기중`, 'warn');
+    return;
+  }
 
-  }, () => {
-    document.getElementById('st-status').textContent = 'GPS 신호 없음';
-    document.getElementById('st-status').className = 'stat-val err';
-  }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 });
+  accEl.textContent = accText;
+  accEl.className = accuracy < 15 ? 'stat-val' : 'stat-val warn';
+
+  // GPS 품질 표시
+  const qEl = document.getElementById('st-quality');
+  if (accuracy < 10)       { qEl.textContent = '●●●●● 최상 (GPS)';   qEl.className = 'stat-val'; }
+  else if (accuracy < 20)  { qEl.textContent = '●●●●○ 양호';          qEl.className = 'stat-val'; }
+  else if (accuracy < 50)  { qEl.textContent = '●●●○○ 보통';          qEl.className = 'stat-val warn'; }
+  else if (accuracy < 100) { qEl.textContent = '●●○○○ 낮음 (WiFi)';  qEl.className = 'stat-val warn'; }
+  else                     { qEl.textContent = '●○○○○ 매우 낮음';     qEl.className = 'stat-val err'; }
+
+  // 5초 간격으로만 전송
+  if (now - lastSent < SEND_INTERVAL) return;
+  lastSent = now;
+
+  const utm = toUTM(lat, lng);
+  sendCount++;
+
+  await set(trackerRef, {
+    id: myId,
+    callsign: document.getElementById('callsign').value.trim().toUpperCase(),
+    role: document.getElementById('role').value,
+    lat, lng, utm,
+    timestamp: now
+  });
+
+  setStatus('전송중 ●', 'ok');
+  document.getElementById('st-utm').textContent = utm;
+  document.getElementById('st-count').textContent = sendCount;
+}
+
+function handleErr(err) {
+  const msgs = {
+    1: 'GPS 권한 거부됨 — 브라우저 설정에서 위치 허용',
+    2: 'GPS 신호 없음 — 실외로 이동하세요',
+    3: 'GPS 응답 없음 — 재시도 중...'
+  };
+  setStatus(msgs[err.code] || 'GPS 오류', 'err');
+}
+
+function setStatus(msg, type) {
+  const el = document.getElementById('st-status');
+  el.textContent = msg;
+  el.className = type === 'ok' ? 'stat-val' : type === 'warn' ? 'stat-val warn' : 'stat-val err';
 }
 
 window.stopTracking = async () => {
-  clearInterval(interval);
+  if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
   if (trackerRef) await remove(trackerRef);
 
   document.getElementById('btn-start').disabled = false;
@@ -216,12 +264,11 @@ window.stopTracking = async () => {
   document.getElementById('callsign').disabled = false;
   document.getElementById('role').disabled = false;
   document.getElementById('pulse').className = '';
-  document.getElementById('st-status').textContent = '중지됨';
-  document.getElementById('st-status').className = 'stat-val err';
+  setStatus('중지됨', 'err');
   document.getElementById('st-utm').textContent = '-';
   document.getElementById('st-acc').textContent = '-';
   sendCount = 0;
-  myId = null; trackerRef = null;
+  myId = null; trackerRef = null; lastSent = 0;
 };
 </script>
 </body>

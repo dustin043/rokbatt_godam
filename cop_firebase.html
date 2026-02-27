@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ROKBATT COP — 지휘통제</title>
+<title>ROKBATT_GODAM — 지휘통제</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Noto+Sans+KR:wght@300;400;700;900&display=swap" rel="stylesheet">
 <style>
@@ -158,9 +158,24 @@
   .custom-popup .leaflet-popup-content { margin: 12px 16px; font-size: 12px; line-height: 1.8; }
 
   /* LEAFLET DARK */
-  .leaflet-tile { filter: brightness(0.45) saturate(0.2) hue-rotate(100deg); }
+  .leaflet-tile { filter: brightness(0.75) saturate(0.5) hue-rotate(100deg); }
   .leaflet-container { background: #060a06; }
   .leaflet-control-zoom a { background: var(--panel) !important; color: var(--accent) !important; border-color: var(--border2) !important; }
+
+  /* HQ MARKER */
+  .hq-label {
+    background: rgba(6,10,6,0.92);
+    border: 2px solid #00aaff;
+    color: #00aaff;
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 3px;
+    white-space: nowrap;
+    pointer-events: none;
+    box-shadow: 0 0 12px rgba(0,170,255,0.5), inset 0 0 8px rgba(0,170,255,0.05);
+    text-shadow: 0 0 8px #00aaff;
+  }
 
   /* MARKER */
   .unit-label {
@@ -207,7 +222,7 @@
 <div id="header">
   <div class="hdr-block">
     <div>
-      <div class="hdr-logo">◈ ROKBATT COP</div>
+      <div class="hdr-logo">◈ ROKBATT_GODAM</div>
       <div class="hdr-sub">COMMAND OPERATIONS PICTURE</div>
     </div>
   </div>
@@ -292,7 +307,11 @@ const db  = getDatabase(app);
 const CENTER = [33.2704, 35.2038];
 const map = L.map('map', { center: CENTER, zoom: 13, zoomControl: true, attributionControl: false });
 
-const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 });
+// 한국어 지명 타일 (카르토 한국어)
+const osmLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+  maxZoom: 19,
+  subdomains: 'abcd'
+});
 const satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 });
 osmLayer.addTo(map);
 let isSat = false;
@@ -302,6 +321,30 @@ window.toggleLayer = () => {
   else        { map.removeLayer(osmLayer); satLayer.addTo(map); document.getElementById('btn-layer').textContent = '일반지도'; }
   isSat = !isSat;
 };
+
+// ── 지휘통제실 GPS 마커 ──────────────────────
+let hqMarker = null;
+
+function initHQMarker() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.watchPosition((pos) => {
+    const { latitude: lat, longitude: lng } = pos.coords;
+    const hqIcon = L.divIcon({
+      className: '',
+      html: `<div class="hq-label">🏢 지휘통제실</div>`,
+      iconAnchor: [0, 14]
+    });
+    if (hqMarker) {
+      hqMarker.setLatLng([lat, lng]);
+    } else {
+      hqMarker = L.marker([lat, lng], { icon: hqIcon, zIndexOffset: 1000 })
+        .addTo(map)
+        .bindPopup(`<div style="color:#00aaff;font-size:13px;font-weight:bold">🏢 지휘통제실 (HQ)</div>
+                    <div style="font-size:11px;color:#3a5a3a;margin-top:4px">${toUTM(lat, lng)}</div>`, { className: 'custom-popup' });
+    }
+  }, null, { enableHighAccuracy: true, maximumAge: 10000 });
+}
+initHQMarker();
 
 window.fitAll = () => {
   const pts = Object.values(trackers).filter(t => t.lat).map(t => [t.lat, t.lng]);
